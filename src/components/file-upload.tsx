@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  RotateCcw,
+  FileCheck2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -19,9 +21,29 @@ const ACCEPTED = {
 } as const;
 
 const ACCEPT_ATTR = Object.values(ACCEPTED).flat().join(",");
-const MAX_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_SIZE = 20 * 1024 * 1024;
 
-type Status = "queued" | "uploading" | "success" | "error";
+type Status = "queued" | "uploading" | "extracting" | "success" | "error";
+
+interface LineItem {
+  description: string;
+  qty: number;
+  unitPrice: number;
+  amount: number;
+}
+
+interface ExtractedInvoice {
+  invoiceNumber: string;
+  issueDate: string;
+  dueDate: string;
+  vendor: { name: string; address: string; taxId: string };
+  billTo: { name: string; address: string };
+  currency: string;
+  lineItems: LineItem[];
+  subtotal: number;
+  tax: number;
+  total: number;
+}
 
 interface UploadItem {
   id: string;
@@ -29,6 +51,7 @@ interface UploadItem {
   progress: number;
   status: Status;
   error?: string;
+  data?: ExtractedInvoice;
 }
 
 function formatSize(bytes: number) {
@@ -37,19 +60,18 @@ function formatSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
+function formatMoney(n: number, ccy = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: ccy }).format(n);
+}
+
 function FileTypeIcon({ file }: { file: File }) {
   const isPdf = file.type === "application/pdf";
   return (
     <div
-      className={cn(
-        "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
-        isPdf
-          ? "bg-destructive/10 text-destructive"
-          : "bg-primary/10 text-primary",
-      )}
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
       aria-hidden="true"
     >
-      {isPdf ? <FileText className="h-5 w-5" /> : <ImageIcon className="h-5 w-5" />}
+      {isPdf ? <FileText className="h-4 w-4" /> : <ImageIcon className="h-4 w-4" />}
     </div>
   );
 }
@@ -59,6 +81,47 @@ function validate(file: File): string | null {
   if (!okType) return "Unsupported format. Use PDF, JPG, PNG or WEBP.";
   if (file.size > MAX_SIZE) return "File exceeds the 20 MB limit.";
   return null;
+}
+
+// Demo "API" — simulates an OCR/extraction service call.
+// Replace with a real fetch() to your invoice parsing endpoint.
+function mockExtract(file: File): Promise<ExtractedInvoice> {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      // ~10% simulated failure for realistic UX
+      if (Math.random() < 0.1) {
+        reject(new Error("Extraction service was unable to parse this document."));
+        return;
+      }
+      const seed = file.name.length;
+      const items: LineItem[] = [
+        { description: "Professional services — Q2", qty: 40, unitPrice: 125, amount: 5000 },
+        { description: "Cloud infrastructure", qty: 1, unitPrice: 1240.5, amount: 1240.5 },
+        { description: "Support & maintenance", qty: 3, unitPrice: 320, amount: 960 },
+      ];
+      const subtotal = items.reduce((s, i) => s + i.amount, 0);
+      const tax = +(subtotal * 0.085).toFixed(2);
+      resolve({
+        invoiceNumber: `INV-2026-${1000 + (seed % 9000)}`,
+        issueDate: "2026-05-28",
+        dueDate: "2026-06-27",
+        vendor: {
+          name: "Northwind Consulting LLC",
+          address: "200 Market Street, Suite 1400, San Francisco, CA 94105",
+          taxId: "US-84-2910337",
+        },
+        billTo: {
+          name: "Acme Corporation",
+          address: "1 Infinite Loop, Cupertino, CA 95014",
+        },
+        currency: "USD",
+        lineItems: items,
+        subtotal,
+        tax,
+        total: +(subtotal + tax).toFixed(2),
+      });
+    }, 1100 + Math.random() * 900);
+  });
 }
 
 export function FileUpload() {
@@ -105,9 +168,7 @@ export function FileUpload() {
       setIsDragging(false);
     }
   };
-  const onDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
+  const onDragOver = (e: React.DragEvent) => e.preventDefault();
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     dragCounter.current = 0;
@@ -116,7 +177,6 @@ export function FileUpload() {
   };
 
   const onBrowse = () => inputRef.current?.click();
-
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -124,249 +184,382 @@ export function FileUpload() {
     }
   };
 
+  const updateItem = (id: string, patch: Partial<UploadItem>) =>
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+
   const removeItem = (id: string) =>
     setItems((prev) => prev.filter((i) => i.id !== id));
 
-  const simulateUpload = (id: string) =>
+  const runProgress = (id: string) =>
     new Promise<void>((resolve) => {
       const tick = () => {
+        let done = false;
         setItems((prev) => {
           const idx = prev.findIndex((i) => i.id === id);
-          if (idx === -1) return prev;
-          const current = prev[idx];
-          if (current.status !== "uploading") return prev;
-          const inc = Math.random() * 18 + 6;
-          const nextProgress = Math.min(100, current.progress + inc);
-          const done = nextProgress >= 100;
-          const updated: UploadItem = {
-            ...current,
-            progress: nextProgress,
-            status: done ? "success" : "uploading",
-          };
+          if (idx === -1) {
+            done = true;
+            return prev;
+          }
+          const cur = prev[idx];
+          if (cur.status !== "uploading") {
+            done = true;
+            return prev;
+          }
+          const inc = Math.random() * 20 + 8;
+          const next = Math.min(100, cur.progress + inc);
+          done = next >= 100;
           const copy = [...prev];
-          copy[idx] = updated;
-          if (done) setTimeout(resolve, 0);
-          else setTimeout(tick, 220);
+          copy[idx] = { ...cur, progress: next };
           return copy;
         });
+        if (done) resolve();
+        else setTimeout(tick, 180);
       };
       tick();
     });
 
-  const uploadAll = async () => {
-    const queued = items.filter((i) => i.status === "queued");
-    if (!queued.length) return;
-    setItems((prev) =>
-      prev.map((i) =>
-        i.status === "queued" ? { ...i, status: "uploading", progress: 4 } : i,
-      ),
-    );
-    await Promise.all(queued.map((i) => simulateUpload(i.id)));
+  const processOne = async (item: UploadItem) => {
+    updateItem(item.id, { status: "uploading", progress: 4, error: undefined });
+    await runProgress(item.id);
+    updateItem(item.id, { status: "extracting", progress: 100 });
+    try {
+      const data = await mockExtract(item.file);
+      updateItem(item.id, { status: "success", data });
+    } catch (e) {
+      updateItem(item.id, {
+        status: "error",
+        error: e instanceof Error ? e.message : "Unknown error",
+      });
+    }
   };
 
-  const hasQueued = items.some((i) => i.status === "queued");
-  const isUploading = items.some((i) => i.status === "uploading");
-  const allDone = items.length > 0 && items.every((i) => i.status === "success");
+  const processAll = async () => {
+    const queued = items.filter((i) => i.status === "queued" || i.status === "error");
+    if (!queued.length) return;
+    await Promise.all(queued.map(processOne));
+  };
+
+  const retry = (id: string) => {
+    const it = items.find((i) => i.id === id);
+    if (it) void processOne(it);
+  };
+
+  const reset = () => {
+    setItems([]);
+    setGlobalError(null);
+  };
+
+  const hasActionable = items.some((i) => i.status === "queued" || i.status === "error");
+  const isBusy = items.some((i) => i.status === "uploading" || i.status === "extracting");
 
   return (
-    <section
-      className="w-full max-w-2xl mx-auto"
-      aria-label="File upload"
-    >
-      <div
-        className={cn(
-          "relative overflow-hidden rounded-3xl border border-border/60 bg-card/60 p-6 sm:p-8 backdrop-blur-xl",
-          "shadow-[var(--shadow-soft)] transition-all duration-300",
-        )}
-        style={{ background: "var(--gradient-surface)" }}
-      >
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label="Upload files: drag and drop here or press Enter to browse"
-          aria-describedby={`${inputId}-hint`}
-          onClick={onBrowse}
-          onKeyDown={onKeyDown}
-          onDragEnter={onDragEnter}
-          onDragLeave={onDragLeave}
-          onDragOver={onDragOver}
-          onDrop={onDrop}
-          className={cn(
-            "group relative flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-6 py-12 sm:py-16 text-center cursor-pointer",
-            "transition-all duration-300 outline-none",
-            "focus-visible:ring-4 focus-visible:ring-ring/30",
-            isDragging
-              ? "border-primary bg-primary/5 scale-[1.01] shadow-[var(--shadow-glow)]"
-              : "border-border hover:border-primary/60 hover:bg-primary/[0.03]",
+    <section className="w-full" aria-label="Invoice upload">
+      <div className="rounded-lg border border-border bg-card shadow-[var(--shadow-soft)]">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <div className="flex items-center gap-2">
+            <FileCheck2 className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-medium text-foreground">Documents</h2>
+          </div>
+          {items.length > 0 && (
+            <button
+              type="button"
+              onClick={reset}
+              disabled={isBusy}
+              className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Clear all
+            </button>
           )}
-        >
+        </div>
+
+        <div className="p-5">
+          {/* Dropzone */}
           <div
+            role="button"
+            tabIndex={0}
+            aria-label="Upload invoice: drag and drop or press Enter to browse"
+            aria-describedby={`${inputId}-hint`}
+            onClick={onBrowse}
+            onKeyDown={onKeyDown}
+            onDragEnter={onDragEnter}
+            onDragLeave={onDragLeave}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
             className={cn(
-              "relative flex h-20 w-20 items-center justify-center rounded-2xl transition-transform duration-300",
-              "group-hover:-translate-y-1",
-              isDragging && "-translate-y-1 scale-110",
+              "flex flex-col items-center justify-center gap-3 rounded-md border border-dashed px-6 py-10 text-center cursor-pointer",
+              "transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+              isDragging
+                ? "border-primary bg-accent/60"
+                : "border-border hover:border-muted-foreground/40 hover:bg-muted/40",
             )}
-            style={{ background: "var(--gradient-primary)", boxShadow: "var(--shadow-elegant)" }}
-            aria-hidden="true"
           >
-            <UploadCloud className="h-9 w-9 text-primary-foreground" />
-            <span
-              className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-500"
-              style={{ boxShadow: "var(--shadow-glow)" }}
+            <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground">
+              <UploadCloud className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">
+                Drop invoice here or{" "}
+                <span className="underline underline-offset-4">browse</span>
+              </p>
+              <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
+                PDF, JPG, PNG, WEBP · up to 20 MB
+              </p>
+            </div>
+            <input
+              ref={inputRef}
+              id={inputId}
+              type="file"
+              multiple
+              accept={ACCEPT_ATTR}
+              className="sr-only"
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = "";
+              }}
             />
           </div>
 
-          <div className="space-y-1.5">
-            <p className="text-lg sm:text-xl font-semibold tracking-tight text-foreground">
-              Drag &amp; Drop your files here
-            </p>
-            <p id={`${inputId}-hint`} className="text-sm text-muted-foreground">
-              or{" "}
-              <span className="font-medium text-primary underline-offset-4 group-hover:underline">
-                click to browse
-              </span>{" "}
-              · PDF, JPG, PNG, WEBP up to 20 MB
-            </p>
-          </div>
+          {globalError && (
+            <div
+              role="alert"
+              className="mt-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+            >
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>{globalError}</span>
+            </div>
+          )}
 
-          <input
-            ref={inputRef}
-            id={inputId}
-            type="file"
-            multiple
-            accept={ACCEPT_ATTR}
-            className="sr-only"
-            onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-        </div>
-
-        {globalError && (
-          <div
-            role="alert"
-            className="mt-4 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive animate-fade-in"
-          >
-            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-            <span>{globalError}</span>
-          </div>
-        )}
-
-        {items.length > 0 && (
-          <ul className="mt-6 space-y-3" aria-label="Selected files">
-            {items.map((item) => (
-              <li
-                key={item.id}
-                className="group/item flex items-center gap-3 rounded-2xl border border-border/60 bg-background/70 p-3 sm:p-4 backdrop-blur-sm transition-all hover:border-border animate-fade-in"
-              >
-                <FileTypeIcon file={item.file} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {item.file.name}
-                    </p>
-                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                      {formatSize(item.file.size)}
-                    </span>
+          {items.length > 0 && (
+            <ul className="mt-5 space-y-2" aria-label="Uploaded documents">
+              {items.map((item) => (
+                <li
+                  key={item.id}
+                  className="rounded-md border border-border bg-background"
+                >
+                  <div className="flex items-center gap-3 px-3 py-3">
+                    <FileTypeIcon file={item.file} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {item.file.name}
+                        </p>
+                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                          {formatSize(item.file.size)}
+                        </span>
+                      </div>
+                      <div className="mt-1">
+                        <StatusLine item={item} />
+                      </div>
+                      {(item.status === "uploading" || item.status === "extracting") && (
+                        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={cn(
+                              "h-full rounded-full bg-primary transition-all duration-200",
+                              item.status === "extracting" && "animate-pulse",
+                            )}
+                            style={{ width: `${item.status === "extracting" ? 100 : item.progress}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {item.status === "error" && (
+                        <button
+                          type="button"
+                          onClick={() => retry(item.id)}
+                          aria-label={`Retry ${item.file.name}`}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removeItem(item.id)}
+                        disabled={item.status === "uploading" || item.status === "extracting"}
+                        aria-label={`Remove ${item.file.name}`}
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
 
-                  {item.status === "uploading" && (
-                    <div className="mt-2 space-y-1">
-                      <div
-                        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-                        role="progressbar"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={Math.round(item.progress)}
-                      >
-                        <div
-                          className="h-full rounded-full transition-all duration-200"
-                          style={{
-                            width: `${item.progress}%`,
-                            background: "var(--gradient-primary)",
-                          }}
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Uploading… {Math.round(item.progress)}%
-                      </p>
-                    </div>
+                  {item.status === "success" && item.data && (
+                    <ExtractedView data={item.data} />
                   )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
-                  {item.status === "queued" && (
-                    <p className="mt-1 text-xs text-muted-foreground">Ready to upload</p>
-                  )}
-
-                  {item.status === "success" && (
-                    <p className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-[color:var(--success)]">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      Uploaded successfully
-                    </p>
-                  )}
-
-                  {item.status === "error" && item.error && (
-                    <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-destructive">
-                      <AlertCircle className="h-3.5 w-3.5" />
-                      {item.error}
-                    </p>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => removeItem(item.id)}
-                  disabled={item.status === "uploading"}
-                  aria-label={`Remove ${item.file.name}`}
-                  className="ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="mt-6 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3">
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
           <p className="text-xs text-muted-foreground" aria-live="polite">
             {items.length === 0
-              ? "No files selected"
-              : allDone
-                ? `All ${items.length} file${items.length > 1 ? "s" : ""} uploaded`
-                : `${items.length} file${items.length > 1 ? "s" : ""} selected`}
+              ? "No documents added"
+              : `${items.length} document${items.length > 1 ? "s" : ""} · ${items.filter((i) => i.status === "success").length} extracted`}
           </p>
           <Button
             type="button"
-            size="lg"
-            onClick={uploadAll}
-            disabled={!hasQueued || isUploading}
-            className="relative h-12 rounded-xl px-6 text-sm font-semibold text-primary-foreground border-0 transition-all hover:-translate-y-0.5 hover:shadow-[var(--shadow-glow)] disabled:hover:translate-y-0"
-            style={{
-              background: "var(--gradient-primary)",
-              boxShadow: "var(--shadow-elegant)",
-            }}
+            size="sm"
+            onClick={processAll}
+            disabled={!hasActionable || isBusy}
+            className="h-9 rounded-md px-4 text-xs font-medium"
           >
-            {isUploading ? (
+            {isBusy ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Uploading…
-              </>
-            ) : allDone ? (
-              <>
-                <CheckCircle2 className="h-4 w-4" />
-                Done
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Processing
               </>
             ) : (
-              <>
-                <UploadCloud className="h-4 w-4" />
-                Upload Files
-              </>
+              <>Extract data</>
             )}
           </Button>
         </div>
       </div>
     </section>
+  );
+}
+
+function StatusLine({ item }: { item: UploadItem }) {
+  switch (item.status) {
+    case "queued":
+      return <p className="text-xs text-muted-foreground">Ready · awaiting extraction</p>;
+    case "uploading":
+      return (
+        <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Uploading… {Math.round(item.progress)}%
+        </p>
+      );
+    case "extracting":
+      return (
+        <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Extracting invoice data…
+        </p>
+      );
+    case "success":
+      return (
+        <p className="inline-flex items-center gap-1.5 text-xs font-medium text-[color:var(--success)]">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          Extracted successfully
+        </p>
+      );
+    case "error":
+      return (
+        <p className="inline-flex items-center gap-1.5 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5" />
+          {item.error ?? "Extraction failed"}
+        </p>
+      );
+  }
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </dt>
+      <dd className="mt-1 text-sm text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function ExtractedView({ data }: { data: ExtractedInvoice }) {
+  return (
+    <div className="border-t border-border bg-muted/30 px-4 py-4">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Extracted invoice
+        </h3>
+        <span className="rounded-sm border border-border bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Verified
+        </span>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+        <Field label="Invoice #" value={data.invoiceNumber} />
+        <Field label="Issue date" value={data.issueDate} />
+        <Field label="Due date" value={data.dueDate} />
+        <Field label="Currency" value={data.currency} />
+      </dl>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="rounded-md border border-border bg-background p-3">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Vendor
+          </p>
+          <p className="mt-1 text-sm font-medium text-foreground">{data.vendor.name}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{data.vendor.address}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">Tax ID: {data.vendor.taxId}</p>
+        </div>
+        <div className="rounded-md border border-border bg-background p-3">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Bill to
+          </p>
+          <p className="mt-1 text-sm font-medium text-foreground">{data.billTo.name}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{data.billTo.address}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-md border border-border bg-background">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/50 text-[11px] uppercase tracking-wider text-muted-foreground">
+              <th className="px-3 py-2 text-left font-medium">Description</th>
+              <th className="px-3 py-2 text-right font-medium">Qty</th>
+              <th className="px-3 py-2 text-right font-medium">Unit</th>
+              <th className="px-3 py-2 text-right font-medium">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.lineItems.map((li, i) => (
+              <tr key={i} className="border-b border-border last:border-0">
+                <td className="px-3 py-2 text-foreground">{li.description}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-foreground">{li.qty}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {formatMoney(li.unitPrice, data.currency)}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                  {formatMoney(li.amount, data.currency)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot className="bg-muted/40">
+            <tr>
+              <td colSpan={3} className="px-3 py-1.5 text-right text-xs text-muted-foreground">
+                Subtotal
+              </td>
+              <td className="px-3 py-1.5 text-right text-sm tabular-nums text-foreground">
+                {formatMoney(data.subtotal, data.currency)}
+              </td>
+            </tr>
+            <tr>
+              <td colSpan={3} className="px-3 py-1.5 text-right text-xs text-muted-foreground">
+                Tax
+              </td>
+              <td className="px-3 py-1.5 text-right text-sm tabular-nums text-foreground">
+                {formatMoney(data.tax, data.currency)}
+              </td>
+            </tr>
+            <tr className="border-t border-border">
+              <td colSpan={3} className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Total
+              </td>
+              <td className="px-3 py-2 text-right text-sm font-semibold tabular-nums text-foreground">
+                {formatMoney(data.total, data.currency)}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
   );
 }
 

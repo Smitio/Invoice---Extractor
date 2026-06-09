@@ -386,9 +386,6 @@ export function FileUpload() {
                     </div>
                   </div>
 
-                  {item.status === "success" && item.data && (
-                    <ExtractedView data={item.data} />
-                  )}
                 </li>
               ))}
             </ul>
@@ -420,6 +417,9 @@ export function FileUpload() {
           </Button>
         </div>
       </div>
+
+      {/* Results panel */}
+      <ResultsPanel items={items} />
     </section>
   );
 }

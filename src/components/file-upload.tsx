@@ -386,9 +386,6 @@ export function FileUpload() {
                     </div>
                   </div>
 
-                  {item.status === "success" && item.data && (
-                    <ExtractedView data={item.data} />
-                  )}
                 </li>
               ))}
             </ul>
@@ -420,6 +417,9 @@ export function FileUpload() {
           </Button>
         </div>
       </div>
+
+      {/* Results panel */}
+      <ResultsPanel items={items} />
     </section>
   );
 }
@@ -470,18 +470,116 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ExtractedView({ data }: { data: ExtractedInvoice }) {
+function ResultsPanel({ items }: { items: UploadItem[] }) {
+  const relevant = items.filter(
+    (i) => i.status === "extracting" || i.status === "success" || i.status === "error",
+  );
+
   return (
-    <div className="border-t border-border bg-muted/30 px-4 py-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Extracted invoice
-        </h3>
-        <span className="rounded-sm border border-border bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          Verified
+    <div className="mt-6 rounded-lg border border-border bg-card shadow-[var(--shadow-soft)]">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3">
+        <div className="flex items-center gap-2">
+          <FileCheck2 className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-medium text-foreground">Extracted invoices</h2>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {relevant.length === 0
+            ? "Nothing yet"
+            : `${relevant.filter((i) => i.status === "success").length} of ${relevant.length} ready`}
         </span>
       </div>
 
+      {relevant.length === 0 ? (
+        <div className="px-5 py-10 text-center">
+          <p className="text-sm text-muted-foreground">
+            Upload an invoice and click <span className="font-medium text-foreground">Extract data</span> to see structured results here.
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {relevant.map((item) => (
+            <li key={item.id} className="px-5 py-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2">
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <p className="truncate text-sm font-medium text-foreground">
+                    {item.file.name}
+                  </p>
+                </div>
+                <StatusBadge status={item.status} />
+              </div>
+
+              {item.status === "extracting" && <ExtractingSkeleton />}
+              {item.status === "error" && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+                >
+                  <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  <span>{item.error ?? "Extraction failed. Use retry on the document above."}</span>
+                </div>
+              )}
+              {item.status === "success" && item.data && <ExtractedView data={item.data} />}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: Status }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    extracting: {
+      label: "Extracting",
+      cls: "border-border bg-muted text-muted-foreground",
+    },
+    success: {
+      label: "Ready",
+      cls: "border-[color:var(--success)]/30 bg-[color:var(--success)]/10 text-[color:var(--success)]",
+    },
+    error: {
+      label: "Failed",
+      cls: "border-destructive/30 bg-destructive/10 text-destructive",
+    },
+  };
+  const m = map[status];
+  if (!m) return null;
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+        m.cls,
+      )}
+    >
+      {m.label}
+    </span>
+  );
+}
+
+function ExtractingSkeleton() {
+  return (
+    <div className="space-y-3" aria-label="Extracting invoice data">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="space-y-1.5">
+            <div className="h-2 w-12 animate-pulse rounded bg-muted" />
+            <div className="h-3.5 w-full animate-pulse rounded bg-muted" />
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="h-20 animate-pulse rounded-md border border-border bg-muted/60" />
+        <div className="h-20 animate-pulse rounded-md border border-border bg-muted/60" />
+      </div>
+      <div className="h-24 animate-pulse rounded-md border border-border bg-muted/60" />
+    </div>
+  );
+}
+
+function ExtractedView({ data }: { data: ExtractedInvoice }) {
+  return (
+    <div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
         <Field label="Invoice #" value={data.invoiceNumber} />
         <Field label="Issue date" value={data.issueDate} />

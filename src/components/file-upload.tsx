@@ -174,7 +174,7 @@ export function FileUpload() {
       const formData = new FormData();
       formData.append("file", item.file);
 
-      const response = await fetch("https://smitenv.app.n8n.cloud/webhook/extract-invoice", {
+      const response = await fetch("https://smeet.app.n8n.cloud/webhook/extract-invoice", {
         method: "POST",
         body: formData,
       });

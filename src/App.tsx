@@ -1,19 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
 import { FileUpload } from "@/components/file-upload";
 
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Upload — Premium File Uploader" },
-      { name: "description", content: "A premium drag-and-drop file uploader for PDF and images." },
-      { property: "og:title", content: "Upload — Premium File Uploader" },
-      { property: "og:description", content: "A premium drag-and-drop file uploader for PDF and images." },
-    ],
-  }),
-  component: Index,
-});
-
-function Index() {
+export default function App() {
   return (
     <main
       className="relative flex min-h-dvh items-start justify-center px-4 py-12 sm:py-16"
